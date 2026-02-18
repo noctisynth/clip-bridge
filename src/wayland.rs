@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use wayland_client::{
+    event_created_child,
     protocol::{wl_compositor, wl_registry, wl_seat},
     Connection, Dispatch, QueueHandle,
 };
@@ -413,6 +414,10 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
             _ => {}
         }
     }
+
+    event_created_child!(WaylandState, ZwlrDataControlDeviceV1, [
+        0 => (ZwlrDataControlOfferV1, ()),
+    ]);
 }
 
 impl Dispatch<ZwlrDataControlOfferV1, ()> for WaylandState {

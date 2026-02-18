@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use x11rb::connection::Connection as X11Connection;
+use x11rb::protocol::xfixes::{ConnectionExt as XFixesConnectionExt, SelectionEventMask};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropertyNotifyEvent,
     SelectionClearEvent, SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass,
@@ -68,6 +69,18 @@ impl X11State {
         conn.flush()
             .map_err(|e| format!("Failed to flush connection: {}", e))?;
 
+        // Initialize XFixes extension
+        let xfixes_query = conn
+            .xfixes_query_version(5, 0)
+            .map_err(|e| format!("Failed to query XFixes version: {}", e))?;
+        let xfixes_reply = xfixes_query
+            .reply()
+            .map_err(|e| format!("Failed to get XFixes version reply: {}", e))?;
+        info!(
+            "[X11] XFixes version: {}.{}",
+            xfixes_reply.major_version, xfixes_reply.minor_version
+        );
+
         // Intern atoms
         let mut atoms = HashMap::new();
         let atom_names = vec![
@@ -93,6 +106,33 @@ impl X11State {
             atoms.insert(name.to_string(), reply.atom);
             debug!("[X11] Interned atom: {} = {}", name, reply.atom);
         }
+
+        // Set up XFixes selection event mask for CLIPBOARD
+        if let Some(clipboard_atom) = atoms.get(CLIPBOARD_ATOM) {
+            conn.xfixes_select_selection_input(
+                window,
+                *clipboard_atom,
+                SelectionEventMask::SET_SELECTION_OWNER
+                    | SelectionEventMask::SELECTION_WINDOW_DESTROY
+                    | SelectionEventMask::SELECTION_CLIENT_CLOSE,
+            )
+            .map_err(|e| format!("Failed to select XFixes clipboard input: {}", e))?;
+            info!("[X11] XFixes selection monitoring enabled for CLIPBOARD");
+        }
+
+        // Set up XFixes selection event mask for PRIMARY
+        conn.xfixes_select_selection_input(
+            window,
+            AtomEnum::PRIMARY.into(),
+            SelectionEventMask::SET_SELECTION_OWNER
+                | SelectionEventMask::SELECTION_WINDOW_DESTROY
+                | SelectionEventMask::SELECTION_CLIENT_CLOSE,
+        )
+        .map_err(|e| format!("Failed to select XFixes primary input: {}", e))?;
+        info!("[X11] XFixes selection monitoring enabled for PRIMARY");
+
+        conn.flush()
+            .map_err(|e| format!("Failed to flush connection: {}", e))?;
 
         Ok(Self {
             conn,
@@ -614,64 +654,10 @@ impl X11State {
     pub fn run_event_loop(&mut self) -> Result<(), String> {
         info!("[X11] Starting event loop");
 
-        // Store last known owners to detect changes
-        let mut last_clipboard_owner: Option<Window> = None;
-        let mut last_primary_owner: Option<Window> = None;
-
         loop {
             // Check for set clipboard requests
             if let Ok((content, clipboard_type)) = self.set_clipboard_rx.try_recv() {
                 let _ = self.set_clipboard_content(content, clipboard_type);
-            }
-
-            // Periodically check for selection owner changes
-            if let Some(clipboard_atom) = self.get_atom(CLIPBOARD_ATOM) {
-                // Check clipboard owner
-                match self.conn.get_selection_owner(clipboard_atom) {
-                    Ok(cookie) => {
-                        if let Ok(reply) = cookie.reply() {
-                            let current_owner = reply.owner;
-                            if last_clipboard_owner != Some(current_owner) {
-                                debug!(
-                                    "[X11] Clipboard owner changed: {:?} -> {:?}",
-                                    last_clipboard_owner, current_owner
-                                );
-                                last_clipboard_owner = Some(current_owner);
-
-                                // If there's a new owner (not us and not none), request content
-                                if current_owner != 0 && current_owner != self.window {
-                                    info!("[X11] New clipboard owner detected, requesting content");
-                                    let _ =
-                                        self.request_clipboard_content(ClipboardType::Clipboard);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => debug!("[X11] Failed to get clipboard owner: {}", e),
-                }
-
-                // Check primary selection owner
-                match self.conn.get_selection_owner(AtomEnum::PRIMARY.into()) {
-                    Ok(cookie) => {
-                        if let Ok(reply) = cookie.reply() {
-                            let current_owner = reply.owner;
-                            if last_primary_owner != Some(current_owner) {
-                                debug!(
-                                    "[X11] Primary owner changed: {:?} -> {:?}",
-                                    last_primary_owner, current_owner
-                                );
-                                last_primary_owner = Some(current_owner);
-
-                                // If there's a new owner (not us and not none), request content
-                                if current_owner != 0 && current_owner != self.window {
-                                    info!("[X11] New primary owner detected, requesting content");
-                                    let _ = self.request_clipboard_content(ClipboardType::Primary);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => debug!("[X11] Failed to get primary owner: {}", e),
-                }
             }
 
             // Process X11 events
@@ -681,7 +667,10 @@ impl X11State {
                     Event::SelectionNotify(e) => self.handle_selection_notify(e)?,
                     Event::SelectionClear(e) => self.handle_selection_clear(e)?,
                     Event::PropertyNotify(e) => self.handle_property_notify(e)?,
-                    _ => {}
+                    Event::XfixesSelectionNotify(e) => self.handle_xfixes_selection_notify(e)?,
+                    _ => {
+                        debug!("[X11] Unhandled event: {:?}", event);
+                    }
                 },
                 Ok(None) => {
                     // No events, continue
@@ -695,8 +684,38 @@ impl X11State {
             let _ = self.conn.flush();
 
             // Sleep to avoid busy waiting
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn handle_xfixes_selection_notify(
+        &self,
+        event: x11rb::protocol::xfixes::SelectionNotifyEvent,
+    ) -> Result<(), String> {
+        debug!("[X11] XFixes selection notify: {:?}", event);
+
+        let clipboard_type = if event.selection == self.get_atom(CLIPBOARD_ATOM).unwrap() {
+            ClipboardType::Clipboard
+        } else {
+            ClipboardType::Primary
+        };
+
+        // Check if we own the selection
+        if event.owner == self.window {
+            debug!("[X11] We own the selection, ignoring");
+            return Ok(());
+        }
+
+        // If there's a new owner (not none), request content
+        if event.owner != 0 {
+            info!(
+                "[X11] Selection changed via XFixes: type={:?}, owner={}",
+                clipboard_type, event.owner
+            );
+            let _ = self.request_clipboard_content(clipboard_type);
+        }
+
+        Ok(())
     }
 }
 

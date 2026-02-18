@@ -101,12 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 wayland_state.set_clipboard_content(content, clipboard_type);
             }
 
-            // Process Wayland events
-            if let Err(e) = event_queue.dispatch_pending(&mut wayland_state) {
+            // Process Wayland events - use blocking_dispatch() to wait for events
+            if let Err(e) = event_queue.blocking_dispatch(&mut wayland_state) {
                 error!("[Wayland] Dispatch error: {}", e);
             }
-            // Small sleep to avoid busy waiting
-            std::thread::sleep(Duration::from_millis(10));
         }
     });
 
