@@ -1,0 +1,19 @@
+[package]
+name = "clip-brige"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 其他工具
+nix = { version = "0.27", features = ["poll"] }
+# 异步运行时
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+# Wayland 相关
+wayland-client = "0.31"
+wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
+wayland-protocols-misc = { version = "0.2", features = ["client"] }
+wayland-protocols-wlr = { version = "0.2", features = ["client"] }
+# X11 相关
+x11rb = { version = "0.13", features = ["all-extensions"] }
