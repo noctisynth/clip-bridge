@@ -14,7 +14,6 @@ use clip_brige::{
 use tracing::{debug, error, info};
 use wayland_client::Connection;
 
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[tokio::main]
@@ -84,20 +83,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Roundtrip to initialize globals
     event_queue.roundtrip(&mut wayland_state)?;
 
-    // Additional roundtrip to ensure seat events are processed
-    event_queue.roundtrip(&mut wayland_state)?;
-
     info!("[Wayland] Connection established");
-
-    // Request initial Wayland clipboard content after everything is set up
-    info!("[Wayland] Connection established, waiting for initial clipboard events");
 
     // Main sync loop
     let wayland_handle = tokio::task::spawn_blocking(move || {
         let mut set_wayland_clipboard_rx = set_wayland_clipboard_rx;
         loop {
-            // Check for set clipboard requests
-            if let Ok((content, clipboard_type)) = set_wayland_clipboard_rx.try_recv() {
+            while let Ok((content, clipboard_type)) = set_wayland_clipboard_rx.try_recv() {
                 wayland_state.set_clipboard_content(content, clipboard_type);
             }
 

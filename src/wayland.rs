@@ -1,10 +1,12 @@
 use std::fs::File;
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd};
+use std::os::fd::{BorrowedFd, FromRawFd};
 use std::sync::Arc;
+use std::time::Duration;
 
 use nix::unistd;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tokio::time;
 use tracing::{debug, error, info, warn};
 use wayland_client::{
     event_created_child,
@@ -94,13 +96,7 @@ impl WaylandState {
                 *self.pending_clipboard_content.blocking_lock() = Some(content.clone());
                 *self.clipboard_content.blocking_lock() = Some(content.clone());
 
-                // Destroy old source
-                if let Some(source) = self.clipboard_source.take() {
-                    debug!("[Wayland] Destroying old clipboard source");
-                    source.destroy();
-                }
-
-                // Create new source using manager
+                // Create new source BEFORE destroying old one to avoid gap
                 if let Some(manager) = &self.data_control_manager {
                     let source = manager.create_data_source(&self._qh, ());
                     source.offer("text/plain;charset=utf-8".into());
@@ -111,9 +107,15 @@ impl WaylandState {
 
                     debug!("[Wayland] Created clipboard source: {:?}", source);
 
-                    // Set selection
+                    // Set selection FIRST - this makes the new source active
                     device.set_selection(Some(&source));
                     debug!("[Wayland] Set clipboard selection");
+
+                    // Now destroy old source after new one is active
+                    if let Some(old_source) = self.clipboard_source.take() {
+                        debug!("[Wayland] Destroying old clipboard source");
+                        old_source.destroy();
+                    }
 
                     self.clipboard_source = Some(source);
                     info!("[Wayland] Clipboard content set successfully");
@@ -129,13 +131,7 @@ impl WaylandState {
                 *self.pending_primary_content.blocking_lock() = Some(content.clone());
                 *self.primary_content.blocking_lock() = Some(content.clone());
 
-                // Destroy old source
-                if let Some(source) = self.primary_source.take() {
-                    debug!("[Wayland] Destroying old primary source");
-                    source.destroy();
-                }
-
-                // Create new source using data control manager
+                // Create new source BEFORE destroying old one to avoid gap
                 if let Some(manager) = &self.data_control_manager {
                     let source = manager.create_data_source(&self._qh, ());
                     source.offer("text/plain;charset=utf-8".into());
@@ -146,9 +142,15 @@ impl WaylandState {
 
                     debug!("[Wayland] Created primary source: {:?}", source);
 
-                    // Set primary selection using device
+                    // Set selection FIRST - this makes the new source active
                     device.set_primary_selection(Some(&source));
                     debug!("[Wayland] Set primary selection");
+
+                    // Now destroy old source after new one is active
+                    if let Some(old_source) = self.primary_source.take() {
+                        debug!("[Wayland] Destroying old primary source");
+                        old_source.destroy();
+                    }
 
                     self.primary_source = Some(source);
                     info!("[Wayland] Primary selection content set successfully");
@@ -303,34 +305,61 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
                             offer.receive("text/plain;charset=utf-8".into(), unsafe {
                                 BorrowedFd::borrow_raw(write_fd)
                             });
+                            // Close the write end immediately after receive() - this signals EOF to the reader
+                            // The compositor has already duplicated the fd, so it's safe to close
+                            let _ = unistd::close(write_fd);
+                            debug!("[Wayland] Closed write_fd");
                             // Read from pipe in a separate task
                             let read_file = unsafe { File::from_raw_fd(read_fd) };
+                            debug!("[Wayland] Created file from read_fd: {:?}", read_file);
                             let sync_tx = state.sync_tx.clone();
                             let content_ref = state.clipboard_content.clone();
-                            tokio::spawn(async move {
+                            tokio::task::spawn(async move {
+                                debug!("[Wayland] Starting async read from pipe");
                                 use tokio::io::AsyncReadExt;
                                 let mut reader = tokio::fs::File::from_std(read_file);
                                 let mut buffer = Vec::new();
-                                match reader.read_to_end(&mut buffer).await {
-                                    Ok(n) => {
-                                        debug!("[Wayland] Read {} bytes from clipboard pipe", n);
-                                        if let Ok(text) = String::from_utf8(buffer) {
-                                            info!(
-                                                "[Wayland] Clipboard content received: {} chars",
-                                                text.len()
+                                let mut chunk = [0u8; 8192];
+                                let timeout_duration = Duration::from_secs(5);
+
+                                loop {
+                                    match time::timeout(timeout_duration, reader.read(&mut chunk))
+                                        .await
+                                    {
+                                        Ok(Ok(0)) => {
+                                            // EOF - no more data
+                                            break;
+                                        }
+                                        Ok(Ok(n)) => {
+                                            buffer.extend_from_slice(&chunk[..n]);
+                                        }
+                                        Ok(Err(e)) => {
+                                            error!("[Wayland] Failed to read from pipe: {}", e);
+                                            return;
+                                        }
+                                        Err(_) => {
+                                            warn!(
+                                                "[Wayland] Pipe read timeout after {:?}",
+                                                timeout_duration
                                             );
-                                            *content_ref.lock().await = Some(text.clone());
-                                            let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                                                content: ClipboardContent::Text(text),
-                                                clipboard_type: ClipboardType::Clipboard,
-                                            });
-                                        } else {
-                                            warn!("[Wayland] Failed to decode clipboard as UTF-8");
+                                            break;
                                         }
                                     }
-                                    Err(e) => {
-                                        error!("[Wayland] Failed to read from pipe: {}", e);
-                                    }
+                                }
+
+                                debug!("[Wayland] Read {} bytes from clipboard pipe", buffer.len());
+                                if let Ok(text) = String::from_utf8(buffer) {
+                                    info!(
+                                        "[Wayland] Clipboard content received: {} chars",
+                                        text.len()
+                                    );
+                                    *content_ref.lock().await = Some(text.clone());
+                                    let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                                        content: ClipboardContent::Text(text),
+                                        clipboard_type: ClipboardType::Clipboard,
+                                    });
+                                } else {
+                                    warn!("[Wayland] Failed to decode clipboard as UTF-8");
                                 }
                             });
                         }
@@ -352,61 +381,61 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
                     });
                 }
             }
-            zwlr_data_control_device_v1::Event::PrimarySelection { id } => {
-                info!("[Wayland] Primary selection changed: {:?}", id);
-                if let Some(offer) = id {
-                    match unistd::pipe() {
-                        Ok((read_fd, write_fd)) => {
-                            debug!("[Wayland] Created pipe for reading primary selection data");
-                            offer.receive("text/plain;charset=utf-8".into(), unsafe {
-                                BorrowedFd::borrow_raw(write_fd)
-                            });
-                            let read_file = unsafe { File::from_raw_fd(read_fd) };
-                            let sync_tx = state.sync_tx.clone();
-                            let content_ref = state.primary_content.clone();
-                            tokio::spawn(async move {
-                                use tokio::io::AsyncReadExt;
-                                let mut reader = tokio::fs::File::from_std(read_file);
-                                let mut buffer = Vec::new();
-                                match reader.read_to_end(&mut buffer).await {
-                                    Ok(n) => {
-                                        debug!("[Wayland] Read {} bytes from primary pipe", n);
-                                        if let Ok(text) = String::from_utf8(buffer) {
-                                            info!(
-                                                "[Wayland] Primary selection content received: {} chars",
-                                                text.len()
-                                            );
-                                            *content_ref.lock().await = Some(text.clone());
-                                            let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                                                content: ClipboardContent::Text(text),
-                                                clipboard_type: ClipboardType::Primary,
-                                            });
-                                        } else {
-                                            warn!("[Wayland] Failed to decode primary as UTF-8");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("[Wayland] Failed to read from pipe: {}", e);
-                                    }
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            error!("[Wayland] Failed to create pipe: {}", e);
-                        }
-                    }
-                } else {
-                    info!("[Wayland] Primary selection cleared");
-                    let content_ref = state.primary_content.clone();
-                    let sync_tx = state.sync_tx.clone();
-                    tokio::spawn(async move {
-                        *content_ref.lock().await = None;
-                        let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                            content: ClipboardContent::Empty,
-                            clipboard_type: ClipboardType::Primary,
-                        });
-                    });
-                }
+            zwlr_data_control_device_v1::Event::PrimarySelection { id: _id } => {
+                // info!("[Wayland] Primary selection changed: {:?}", id);
+                // if let Some(offer) = id {
+                //     match unistd::pipe() {
+                //         Ok((read_fd, write_fd)) => {
+                //             debug!("[Wayland] Created pipe for reading primary selection data");
+                //             offer.receive("text/plain;charset=utf-8".into(), unsafe {
+                //                 BorrowedFd::borrow_raw(write_fd)
+                //             });
+                //             let read_file = unsafe { File::from_raw_fd(read_fd) };
+                //             let sync_tx = state.sync_tx.clone();
+                //             let content_ref = state.primary_content.clone();
+                //             tokio::spawn(async move {
+                //                 use tokio::io::AsyncReadExt;
+                //                 let mut reader = tokio::fs::File::from_std(read_file);
+                //                 let mut buffer = Vec::new();
+                //                 match reader.read_to_end(&mut buffer).await {
+                //                     Ok(n) => {
+                //                         debug!("[Wayland] Read {} bytes from primary pipe", n);
+                //                         if let Ok(text) = String::from_utf8(buffer) {
+                //                             info!(
+                //                                 "[Wayland] Primary selection content received: {} chars",
+                //                                 text.len()
+                //                             );
+                //                             *content_ref.lock().await = Some(text.clone());
+                //                             let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                //                                 content: ClipboardContent::Text(text),
+                //                                 clipboard_type: ClipboardType::Primary,
+                //                             });
+                //                         } else {
+                //                             warn!("[Wayland] Failed to decode primary as UTF-8");
+                //                         }
+                //                     }
+                //                     Err(e) => {
+                //                         error!("[Wayland] Failed to read from pipe: {}", e);
+                //                     }
+                //                 }
+                //             });
+                //         }
+                //         Err(e) => {
+                //             error!("[Wayland] Failed to create pipe: {}", e);
+                //         }
+                //     }
+                // } else {
+                //     info!("[Wayland] Primary selection cleared");
+                //     let content_ref = state.primary_content.clone();
+                //     let sync_tx = state.sync_tx.clone();
+                //     tokio::spawn(async move {
+                //         *content_ref.lock().await = None;
+                //         let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                //             content: ClipboardContent::Empty,
+                //             clipboard_type: ClipboardType::Primary,
+                //         });
+                //     });
+                // }
             }
             zwlr_data_control_device_v1::Event::Finished => {
                 debug!("[Wayland] Data control device finished");
@@ -465,7 +494,7 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for WaylandState {
                 } else {
                     warn!("[Wayland] Unknown source {:?}, cannot determine content. Current clipboard: {:?}, Primary: {:?}",
                           source, state.clipboard_source, state.primary_source);
-                    let _ = nix::unistd::close(fd.as_raw_fd());
+                    // OwnedFd will be closed automatically when dropped
                     return;
                 };
 
@@ -492,11 +521,10 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for WaylandState {
                             error!("[Wayland] Failed to write data: {}", e);
                         }
                     }
-                    // Close the file descriptor after writing
-                    let _ = nix::unistd::close(fd_raw);
+                    // OwnedFd will be closed automatically when dropped
                 } else {
                     warn!("[Wayland] No content available to send");
-                    let _ = nix::unistd::close(fd.as_raw_fd());
+                    // OwnedFd will be closed automatically when dropped
                 }
             }
             zwlr_data_control_source_v1::Event::Cancelled => {
@@ -584,11 +612,10 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for WaylandState {
                             error!("[Wayland] Failed to write primary data: {}", e);
                         }
                     }
-                    // Close the file descriptor after writing
-                    let _ = nix::unistd::close(fd_raw);
+                    // OwnedFd will be closed automatically when dropped
                 } else {
                     warn!("[Wayland] No primary content available to send");
-                    let _ = nix::unistd::close(fd.as_raw_fd());
+                    // OwnedFd will be closed automatically when dropped
                 }
             }
             zwp_primary_selection_source_v1::Event::Cancelled => {
