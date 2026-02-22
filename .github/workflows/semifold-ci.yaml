@@ -30,6 +30,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Setup cargo-aur
         run: cargo install cargo-aur
+      - name: Install Makepkg
+        run: sudo apt-get update && sudo apt-get install -y makepkg pacman
       - name: Semifold CI
         run: semifold ci
         env:
