@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::os::fd::{BorrowedFd, FromRawFd};
+use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -302,15 +302,13 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
                         Ok((read_fd, write_fd)) => {
                             debug!("[Wayland] Created pipe for reading clipboard data");
                             // Request text content with pipe
-                            offer.receive("text/plain;charset=utf-8".into(), unsafe {
-                                BorrowedFd::borrow_raw(write_fd)
-                            });
+                            offer.receive("text/plain;charset=utf-8".into(), write_fd.as_fd());
                             // Close the write end immediately after receive() - this signals EOF to the reader
                             // The compositor has already duplicated the fd, so it's safe to close
                             let _ = unistd::close(write_fd);
                             debug!("[Wayland] Closed write_fd");
                             // Read from pipe in a separate task
-                            let read_file = unsafe { File::from_raw_fd(read_fd) };
+                            let read_file = File::from(read_fd);
                             debug!("[Wayland] Created file from read_fd: {:?}", read_file);
                             let sync_tx = state.sync_tx.clone();
                             let content_ref = state.clipboard_content.clone();
@@ -498,12 +496,8 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for WaylandState {
                 if let Some(data) = content {
                     debug!("[Wayland] Writing {} bytes to fd", data.len());
                     // Write the actual content to file descriptor
-                    use std::os::fd::AsRawFd;
-
-                    let fd_raw = fd.as_raw_fd();
-                    // Use write directly to avoid File ownership issues
                     use nix::unistd::write;
-                    match write(fd_raw, data.as_bytes()) {
+                    match write(&fd, data.as_bytes()) {
                         Ok(bytes_written) => {
                             debug!("[Wayland] Successfully wrote {} bytes", bytes_written);
                             if bytes_written != data.len() {
@@ -584,11 +578,8 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for WaylandState {
                     debug!("[Wayland] Writing {} bytes to primary fd", data.len());
                     // Write the actual content to file descriptor
                     use nix::unistd::write;
-                    use std::os::fd::AsRawFd;
-
-                    let fd_raw = fd.as_raw_fd();
                     // Use write directly to avoid File ownership issues
-                    match write(fd_raw, data.as_bytes()) {
+                    match write(&fd, data.as_bytes()) {
                         Ok(bytes_written) => {
                             debug!(
                                 "[Wayland] Successfully wrote {} bytes to primary",

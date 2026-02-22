@@ -22,15 +22,15 @@ optdepends = ["wl-clipboard", "xclip"]
 
 [dependencies]
 # Utils
-nix = { version = "0.27", features = ["poll"] }
+nix = { version = "0.31.1", features = ["poll"] }
 # Async Runtime
 tokio = { version = "1.35", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 # Wayland Related
 wayland-client = "0.31"
-wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
-wayland-protocols-misc = { version = "0.2", features = ["client"] }
-wayland-protocols-wlr = { version = "0.2", features = ["client"] }
+wayland-protocols = { version = "0.32.10", features = ["client", "unstable"] }
+wayland-protocols-misc = { version = "0.3.10", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 # X11 Related
 x11rb = { version = "0.13", features = ["all-extensions"] }
