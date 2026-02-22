@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.7
+
+### New Features
+
+- [`9963d01`](https://github.com/noctisynth/clip-bridge/commit/9963d0100c4b9489ad0b503860ebf1c6016e4e3d): Use timestamp const var from x11rb
+
+### Bug Fixes
+
+- [`b6bc25d`](https://github.com/noctisynth/clip-bridge/commit/b6bc25dc04c6ca742df2e489d1742602a43c537b): Fix source url of AUR PKGBUILD.
+
 ## v0.1.6
 
 ### New Features
