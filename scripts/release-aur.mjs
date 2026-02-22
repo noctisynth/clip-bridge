@@ -76,6 +76,21 @@ execSync("cp -r target/cargo-aur/* release/aur/", {
 	cwd: projectRoot,
 });
 
+// Fix PKGBUILD
+// From `https://github.com/noctisynth/clip-bridge/releases/download/v$pkgver/clip-bridge-$pkgver-x86_64.tar.gz`
+// to `https://github.com/noctisynth/clip-bridge/releases/download/clip-bridge-v$pkgver/clip-bridge-$pkgver-x86_64.tar.gz`
+const pkgbuildPath = path.resolve("aur", "PKGBUILD");
+if (!existsSync(pkgbuildPath)) {
+	console.error("PKGBUILD file not found.");
+	process.exit(1);
+}
+let pkgbuild = readFileSync(pkgbuildPath, { encoding: "utf-8" });
+pkgbuild = pkgbuild.replace(
+	"https://github.com/noctisynth/clip-bridge/releases/download/v$pkgver/clip-bridge-$pkgver-x86_64.tar.gz",
+	"https://github.com/noctisynth/clip-bridge/releases/download/clip-bridge-v$pkgver/clip-bridge-$pkgver-x86_64.tar.gz",
+);
+writeFileSync(pkgbuildPath, pkgbuild);
+
 // Generate .SRCINFO file
 execSync("makepkg --printsrcinfo > .SRCINFO", {
 	cwd: "aur",
@@ -100,12 +115,12 @@ if (!process.env.CI) {
 	});
 }
 
-// Publish to AUR
-execSync(`git commit -m "release: publish aur"`, {
-	stdio: "inherit",
-	cwd: "aur",
-});
-execSync(`git push origin master`, {
-	stdio: "inherit",
-	cwd: "aur",
-});
+// // Publish to AUR
+// execSync(`git commit -m "release: publish aur"`, {
+// 	stdio: "inherit",
+// 	cwd: "aur",
+// });
+// execSync(`git push origin master`, {
+// 	stdio: "inherit",
+// 	cwd: "aur",
+// });
