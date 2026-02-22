@@ -240,7 +240,7 @@ impl X11State {
         debug!("[X11] Requesting selection from owner: {}", owner.owner);
 
         // Try multiple targets in order of preference
-        let targets = vec![utf8_string, text_plain, string_atom];
+        let targets = [utf8_string, text_plain, string_atom];
         for (i, target) in targets.iter().enumerate() {
             let property = match self.get_atom(&format!("CLIP_TEMP_{}", i)) {
                 Some(atom) => atom,

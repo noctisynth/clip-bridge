@@ -458,11 +458,8 @@ impl Dispatch<ZwlrDataControlOfferV1, ()> for WaylandState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            zwlr_data_control_offer_v1::Event::Offer { mime_type } => {
-                debug!("[Wayland] Offer mime type: {}", mime_type);
-            }
-            _ => {}
+        if let zwlr_data_control_offer_v1::Event::Offer { mime_type } = event {
+            debug!("[Wayland] Offer mime type: {}", mime_type);
         }
     }
 }
@@ -557,11 +554,8 @@ impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for WaylandState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            zwp_primary_selection_offer_v1::Event::Offer { mime_type } => {
-                debug!("[Wayland] Primary offer mime type: {}", mime_type);
-            }
-            _ => {}
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event {
+            debug!("[Wayland] Primary offer mime type: {}", mime_type);
         }
     }
 }
