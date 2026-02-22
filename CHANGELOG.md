@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.5
+
+### Bug Fixes
+
+- [`6a0da44`](https://github.com/noctisynth/clip-bridge/commit/6a0da442f9b0bb0fc9d3b238b003d5fd57c5ba02): Add missing makepkg dependencies to containers.
+
 ## v0.1.4
 
 ### Bug Fixes
