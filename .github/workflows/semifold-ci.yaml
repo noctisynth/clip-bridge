@@ -26,6 +26,10 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: lts/*
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup cargo-aur
+        run: cargo install cargo-aur
       - name: Semifold CI
         run: semifold ci
         env:
