@@ -10,6 +10,16 @@ readme = "README.md"
 keywords = ["clipboard", "sync", "wayland", "x11"]
 categories = ["command-line-utilities"]
 
+[package.metadata.aur]
+depends = [
+  "wayland",
+  "wayland-protocols",
+  "libx11",
+  "libxkbcommon",
+  "libxkbcommon-x11"
+]
+optdepends = ["wl-clipboard", "xclip"]
+
 [dependencies]
 # Utils
 nix = { version = "0.27", features = ["poll"] }

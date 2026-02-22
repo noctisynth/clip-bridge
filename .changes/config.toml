@@ -23,6 +23,10 @@ User-Agent = "Semifold 0.2.13"
 command = "cargo"
 args = ["publish"]
 
+[[resolver.rust.publish]]
+command = "node"
+args = ["scripts/release-aur.mjs"]
+
 [[resolver.rust.post-version]]
 command = "cargo"
 args = [
