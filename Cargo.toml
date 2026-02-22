@@ -1,19 +1,26 @@
 [package]
 name = "clip-bridge"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+authors = ["苏向夜 <fu050409@163.com>"]
+description = "Sync your X11 and Wayland clipboard seamlessly"
+license = "MIT"
+repository = "https://github.com/noctisynth/clip-bridge"
+readme = "README.md"
+keywords = ["clipboard", "sync", "wayland", "x11"]
+categories = ["command-line-utilities"]
 
 [dependencies]
-# 其他工具
+# Utils
 nix = { version = "0.27", features = ["poll"] }
-# 异步运行时
+# Async Runtime
 tokio = { version = "1.35", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-# Wayland 相关
+# Wayland Related
 wayland-client = "0.31"
 wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
 wayland-protocols-misc = { version = "0.2", features = ["client"] }
 wayland-protocols-wlr = { version = "0.2", features = ["client"] }
-# X11 相关
+# X11 Related
 x11rb = { version = "0.13", features = ["all-extensions"] }
