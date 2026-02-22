@@ -3,9 +3,9 @@
 //! This program synchronizes clipboard content between X11 and Wayland compositors.
 
 use clip_bridge::{
+    ClipboardContent, ClipboardType, SyncEvent,
     wayland::{GlobalData, WaylandState},
     x11::X11State,
-    ClipboardContent, ClipboardType, SyncEvent,
 };
 // ============================================================================
 // Main Application

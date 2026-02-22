@@ -4,14 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nix::unistd;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 use wayland_client::{
-    event_created_child,
+    Connection, Dispatch, QueueHandle, event_created_child,
     protocol::{wl_compositor, wl_registry, wl_seat},
-    Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
@@ -190,11 +189,10 @@ impl Dispatch<wl_registry::WlRegistry, GlobalData> for WaylandState {
                     }
                     "wl_seat" => {
                         state.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(name, 7, qh, ()));
-                        if let Some(manager) = &state.data_control_manager {
-                            if let Some(seat) = &state.seat {
-                                state.data_control_device =
-                                    Some(manager.get_data_device(seat, qh, ()));
-                            }
+                        if let Some(manager) = &state.data_control_manager
+                            && let Some(seat) = &state.seat
+                        {
+                            state.data_control_device = Some(manager.get_data_device(seat, qh, ()));
                         }
                     }
                     "zwlr_data_control_manager_v1" => {
@@ -347,15 +345,22 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
 
                                 debug!("[Wayland] Read {} bytes from clipboard pipe", buffer.len());
                                 if let Ok(text) = String::from_utf8(buffer) {
-                                    info!(
-                                        "[Wayland] Clipboard content received: {} chars",
-                                        text.len()
-                                    );
-                                    *content_ref.lock().await = Some(text.clone());
-                                    let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                                        content: ClipboardContent::Text(text),
-                                        clipboard_type: ClipboardType::Clipboard,
-                                    });
+                                    if text.is_empty() {
+                                        // Wechat sends empty clipboard content to wayland,
+                                        // however it uses x11 clipboard to send the actual content.
+                                        // So we ignore empty clipboard content.
+                                        warn!("[Wayland] Received empty clipboard content");
+                                    } else {
+                                        info!(
+                                            "[Wayland] Clipboard content received: {} chars",
+                                            text.len()
+                                        );
+                                        *content_ref.lock().await = Some(text.clone());
+                                        let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                                            content: ClipboardContent::Text(text),
+                                            clipboard_type: ClipboardType::Clipboard,
+                                        });
+                                    }
                                 } else {
                                     warn!("[Wayland] Failed to decode clipboard as UTF-8");
                                 }
@@ -366,17 +371,20 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
                         }
                     }
                 } else {
-                    // Selection cleared
-                    info!("[Wayland] Selection cleared");
-                    let content_ref = state.clipboard_content.clone();
-                    let sync_tx = state.sync_tx.clone();
-                    tokio::spawn(async move {
-                        *content_ref.lock().await = None;
-                        let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                            content: ClipboardContent::Empty,
-                            clipboard_type: ClipboardType::Clipboard,
-                        });
-                    });
+                    // Wechat sends empty clipboard content to wayland,
+                    // clear the selection will trigger recursive call to this function.
+
+                    // // Selection cleared
+                    // info!("[Wayland] Selection cleared");
+                    // let content_ref = state.clipboard_content.clone();
+                    // let sync_tx = state.sync_tx.clone();
+                    // tokio::spawn(async move {
+                    //     *content_ref.lock().await = None;
+                    //     let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                    //         content: ClipboardContent::Empty,
+                    //         clipboard_type: ClipboardType::Clipboard,
+                    //     });
+                    // });
                 }
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id: _id } => {
@@ -487,8 +495,10 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for WaylandState {
                     debug!("[Wayland] This is primary source");
                     state.pending_primary_content.blocking_lock().clone()
                 } else {
-                    warn!("[Wayland] Unknown source {:?}, cannot determine content. Current clipboard: {:?}, Primary: {:?}",
-                          source, state.clipboard_source, state.primary_source);
+                    warn!(
+                        "[Wayland] Unknown source {:?}, cannot determine content. Current clipboard: {:?}, Primary: {:?}",
+                        source, state.clipboard_source, state.primary_source
+                    );
                     // OwnedFd will be closed automatically when dropped
                     return;
                 };

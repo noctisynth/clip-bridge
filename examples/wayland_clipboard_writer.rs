@@ -1,4 +1,4 @@
-use clip_bridge::{wayland::WaylandState, ClipboardType};
+use clip_bridge::{ClipboardType, wayland::WaylandState};
 use tokio::sync::mpsc;
 use tracing::info;
 use wayland_client::Connection;

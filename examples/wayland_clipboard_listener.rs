@@ -1,6 +1,6 @@
 use clip_bridge::{
-    wayland::{GlobalData, WaylandState},
     ClipboardType,
+    wayland::{GlobalData, WaylandState},
 };
 use tokio::sync::mpsc;
 use tracing_subscriber;
@@ -33,10 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting Wayland clipboard listener. Copy something to clipboard to test...");
 
     // Run event loop in a separate blocking task
-    let handle = tokio::task::spawn_blocking(move || loop {
-        if let Err(e) = event_queue.blocking_dispatch(&mut wayland_state) {
-            eprintln!("Wayland dispatch error: {}", e);
-            break;
+    let handle = tokio::task::spawn_blocking(move || {
+        loop {
+            if let Err(e) = event_queue.blocking_dispatch(&mut wayland_state) {
+                eprintln!("Wayland dispatch error: {}", e);
+                break;
+            }
         }
     });
 
