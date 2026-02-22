@@ -48,7 +48,6 @@ pub struct WaylandState {
     primary_source: Option<ZwlrDataControlSourceV1>,
     _set_clipboard_tx: mpsc::UnboundedSender<(String, ClipboardType)>,
     // Store content to be written when requested
-    pending_clipboard_content: Arc<Mutex<Option<String>>>,
     pending_primary_content: Arc<Mutex<Option<String>>>,
 }
 
@@ -71,7 +70,6 @@ impl WaylandState {
             clipboard_source: None,
             primary_source: None,
             _set_clipboard_tx: set_clipboard_tx,
-            pending_clipboard_content: Arc::new(Mutex::new(None)),
             pending_primary_content: Arc::new(Mutex::new(None)),
         }
     }
@@ -93,7 +91,7 @@ impl WaylandState {
         match clipboard_type {
             ClipboardType::Clipboard => {
                 // Store content first, before creating source
-                *self.pending_clipboard_content.blocking_lock() = Some(content.clone());
+                // *self.pending_clipboard_content.blocking_lock() = Some(content.clone());
                 *self.clipboard_content.blocking_lock() = Some(content.clone());
 
                 // Create new source BEFORE destroying old one to avoid gap
@@ -192,12 +190,16 @@ impl Dispatch<wl_registry::WlRegistry, GlobalData> for WaylandState {
                     }
                     "wl_seat" => {
                         state.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(name, 7, qh, ()));
+                        if let Some(manager) = &state.data_control_manager {
+                            if let Some(seat) = &state.seat {
+                                state.data_control_device =
+                                    Some(manager.get_data_device(seat, qh, ()));
+                            }
+                        }
                     }
                     "zwlr_data_control_manager_v1" => {
                         state.data_control_manager =
                             Some(registry.bind::<ZwlrDataControlManagerV1, _, _>(name, 2, qh, ()));
-                        info!("[Wayland] Data control manager bound");
-                        // Try to bind device if seat is already available
                         if let Some(seat) = &state.seat {
                             state.data_control_device = Some(
                                 state
@@ -206,7 +208,6 @@ impl Dispatch<wl_registry::WlRegistry, GlobalData> for WaylandState {
                                     .unwrap()
                                     .get_data_device(seat, qh, ()),
                             );
-                            info!("[Wayland] Data control device bound");
                         }
                     }
                     "zwp_primary_selection_device_manager_v1" => {
@@ -217,7 +218,6 @@ impl Dispatch<wl_registry::WlRegistry, GlobalData> for WaylandState {
                                 qh,
                                 (),
                             ));
-                        info!("[Wayland] Primary selection manager bound");
                     }
                     _ => {}
                 }
@@ -487,7 +487,7 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for WaylandState {
                 // Determine which content to send based on source
                 let content = if Some(source) == state.clipboard_source.as_ref() {
                     debug!("[Wayland] This is clipboard source");
-                    state.pending_clipboard_content.blocking_lock().clone()
+                    state.clipboard_content.blocking_lock().clone()
                 } else if Some(source) == state.primary_source.as_ref() {
                     debug!("[Wayland] This is primary source");
                     state.pending_primary_content.blocking_lock().clone()

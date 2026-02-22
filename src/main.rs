@@ -12,16 +12,14 @@ use clip_brige::{
 // ============================================================================
 //
 use tracing::{debug, error, info};
-use wayland_client::Connection;
+use wayland_client::{Connection, DispatchError};
 
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+    tracing_subscriber::fmt().init();
 
     info!("Starting X11 <-> Wayland Clipboard Bridge");
 
@@ -50,12 +48,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         info!("[X11] Connection established, window: {}", x11_state.window);
 
-        // Request initial clipboard content
-        info!("[X11] Requesting initial clipboard content");
-        let _ = x11_state.request_clipboard_content(ClipboardType::Clipboard);
-        let _ = x11_state.request_clipboard_content(ClipboardType::Primary);
-
         // Run X11 event loop
+        // Note: We don't request clipboard content here on startup.
+        // Instead, we wait for XFixes selection events which indicate
+        // when another application owns the selection. This avoids the
+        // race condition where we request content before any app has set it.
         if let Err(e) = x11_state.run_event_loop() {
             error!("[X11] Event loop error: {}", e);
         }
@@ -86,19 +83,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("[Wayland] Connection established");
 
     // Main sync loop
-    let wayland_handle = tokio::task::spawn_blocking(move || {
-        let mut set_wayland_clipboard_rx = set_wayland_clipboard_rx;
-        loop {
-            while let Ok((content, clipboard_type)) = set_wayland_clipboard_rx.try_recv() {
-                wayland_state.set_clipboard_content(content, clipboard_type);
-            }
+    let wayland_handle: JoinHandle<Result<(), DispatchError>> =
+        tokio::task::spawn_blocking(move || {
+            let mut set_wayland_clipboard_rx = set_wayland_clipboard_rx;
+            loop {
+                if let Ok((content, clipboard_type)) = set_wayland_clipboard_rx.try_recv() {
+                    wayland_state.set_clipboard_content(content, clipboard_type);
+                }
 
-            // Process Wayland events - use blocking_dispatch() to wait for events
-            if let Err(e) = event_queue.blocking_dispatch(&mut wayland_state) {
-                error!("[Wayland] Dispatch error: {}", e);
+                event_queue.roundtrip(&mut wayland_state)?;
+
+                if let Err(e) = event_queue.dispatch_pending(&mut wayland_state) {
+                    error!("[Wayland] Dispatch error: {}", e);
+                }
             }
-        }
-    });
+        });
 
     // Handle sync events in main task
     tokio::spawn(async move {
