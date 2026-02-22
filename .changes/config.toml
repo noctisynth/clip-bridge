@@ -12,6 +12,7 @@ refactor = "Refactors"
 [packages.clip-bridge]
 path = "."
 resolver = "rust"
+assets = ["./target/cargo-aur/clip-bridge-*.tar.gz"]
 
 [resolver.rust.pre-check]
 url = "https://crates.io/api/v1/crates/{{ package.name }}/{{ package.version }}"

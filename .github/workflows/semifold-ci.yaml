@@ -32,6 +32,8 @@ jobs:
         run: cargo install cargo-aur
       - name: Install Makepkg
         run: sudo apt-get update && sudo apt-get install -y makepkg pacman
+      - name: Run cargo-aur
+        run: cargo aur
       - name: Semifold CI
         run: semifold ci
         env:

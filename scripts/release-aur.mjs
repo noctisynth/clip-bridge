@@ -62,16 +62,13 @@ if (existsSync(knownHostsPath)) {
 // Clone AUR repository if not exists
 if (!existsSync("aur")) {
 	execSync(
-		`git -c init.defaultBranch=master -c core.sshCommand="ssh -i ${aurSSHKeyPath}" clone ssh://aur@aur.archlinux.org/clip-bridge.git aur`,
+		`git -c init.defaultBranch=master -c core.sshCommand="ssh -i ${aurSSHKeyPath}" clone ssh://aur@aur.archlinux.org/clip-bridge-bin.git aur`,
 		{ stdio: "inherit" },
 	);
 }
 execSync(`git -C aur config core.sshCommand "ssh -i ${aurSSHKeyPath}"`, {
 	stdio: "inherit",
 });
-
-// Run `cargo aur` to generate PKGBUILD
-execSync("cargo aur", { stdio: "inherit", cwd: projectRoot });
 
 // Copy files from `target/cargo-aur` to `aur`
 execSync("cp -r target/cargo-aur/* release/aur/", {
@@ -86,7 +83,7 @@ execSync("makepkg --printsrcinfo > .SRCINFO", {
 });
 
 // Setup Git repository
-execSync("git add .", {
+execSync("git add PKGBUILD .SRCINFO", {
 	stdio: "inherit",
 	cwd: "aur",
 });
