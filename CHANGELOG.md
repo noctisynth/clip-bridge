@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.3
+
+### Chores
+
+- [`072014d`](https://github.com/noctisynth/clip-bridge/commit/072014dfb5a936f46c8ac67fc52bc22eb1225d29): Fix AUR release script failed to access AUR_SSH_KEY.
+
 ## v0.1.2
 
 ### Chores
