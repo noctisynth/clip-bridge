@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.4
+
+### Bug Fixes
+
+- [`8d0664e`](https://github.com/noctisynth/clip-bridge/commit/8d0664ed2b1dc595c533aa3e68021602fbdc77d9): Install `cargo-aur` before semifold ci.
+
 ## v0.1.3
 
 ### Chores
