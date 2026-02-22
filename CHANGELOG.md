@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.8
+
+### New Features
+
+- [`bca4e38`](https://github.com/noctisynth/clip-bridge/commit/bca4e3884b289d16c80b1755a66af64202ffa6c9): Bump wayland related deps to latest port.
+
 ## v0.1.7
 
 ### New Features
