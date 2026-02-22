@@ -6,23 +6,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
+use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection as X11Connection;
+use x11rb::protocol::Event;
 use x11rb::protocol::xfixes::{ConnectionExt as XFixesConnectionExt, SelectionEventMask};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropertyNotifyEvent,
-    SelectionClearEvent, SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass,
-    SELECTION_NOTIFY_EVENT,
+    SELECTION_NOTIFY_EVENT, SelectionClearEvent, SelectionNotifyEvent, SelectionRequestEvent,
+    Window, WindowClass,
 };
-use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::{
-    ClipboardContent, ClipboardType, SyncEvent, CLIPBOARD_ATOM, CURRENT_TIME, INCR_ATOM,
-    MULTIPLE_ATOM, PRIMARY_ATOM, STRING_ATOM, TARGETS_ATOM, TEXT_ATOM, TEXT_PLAIN_ATOM,
-    TEXT_PLAIN_UTF8_ATOM, UTF8_STRING_ATOM,
+    CLIPBOARD_ATOM, ClipboardContent, ClipboardType, INCR_ATOM, MULTIPLE_ATOM, PRIMARY_ATOM,
+    STRING_ATOM, SyncEvent, TARGETS_ATOM, TEXT_ATOM, TEXT_PLAIN_ATOM, TEXT_PLAIN_UTF8_ATOM,
+    UTF8_STRING_ATOM,
 };
 
 pub struct X11State {
@@ -185,9 +186,8 @@ impl X11State {
             .map_err(|e| format!("Failed to flush connection: {}", e))?;
 
         // Claim selection ownership
-        let timestamp = CURRENT_TIME;
         self.conn
-            .set_selection_owner(self.window, selection_atom, timestamp)
+            .set_selection_owner(self.window, selection_atom, CURRENT_TIME)
             .map_err(|e| format!("Failed to set selection owner: {}", e))?;
         self.conn
             .flush()
