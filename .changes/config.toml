@@ -26,7 +26,6 @@ args = ["publish"]
 [[resolver.rust.post-version]]
 command = "cargo"
 args = [
-    "generate-lockfile",
-    "--offline",
+  "generate-lockfile",
 ]
 dry_run = true
