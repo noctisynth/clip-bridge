@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.9
+
+### Bug Fixes
+
+- [`2fd1262`](https://github.com/noctisynth/clip-bridge/commit/2fd1262833450691a23da7a88d2e1c9b7a6e73ae): Fix `clip-bridge` recursive call due to some apps like WeChat will send empty content to wayland protocols.
+
 ## v0.1.8
 
 ### New Features
