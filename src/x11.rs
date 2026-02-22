@@ -6,23 +6,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
-use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection as X11Connection;
-use x11rb::protocol::Event;
 use x11rb::protocol::xfixes::{ConnectionExt as XFixesConnectionExt, SelectionEventMask};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropertyNotifyEvent,
-    SELECTION_NOTIFY_EVENT, SelectionClearEvent, SelectionNotifyEvent, SelectionRequestEvent,
-    Window, WindowClass,
+    SelectionClearEvent, SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass,
+    SELECTION_NOTIFY_EVENT,
 };
+use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
+use x11rb::CURRENT_TIME;
 
 use crate::{
-    CLIPBOARD_ATOM, ClipboardContent, ClipboardType, INCR_ATOM, MULTIPLE_ATOM, PRIMARY_ATOM,
-    STRING_ATOM, SyncEvent, TARGETS_ATOM, TEXT_ATOM, TEXT_PLAIN_ATOM, TEXT_PLAIN_UTF8_ATOM,
+    ClipboardContent, ClipboardType, SyncEvent, CLIPBOARD_ATOM, INCR_ATOM, MULTIPLE_ATOM,
+    PRIMARY_ATOM, STRING_ATOM, TARGETS_ATOM, TEXT_ATOM, TEXT_PLAIN_ATOM, TEXT_PLAIN_UTF8_ATOM,
     UTF8_STRING_ATOM,
 };
 
@@ -32,9 +32,9 @@ pub struct X11State {
     atoms: HashMap<String, Atom>,
     pub window: Window,
     sync_tx: mpsc::UnboundedSender<SyncEvent>,
-    clipboard_content: Arc<Mutex<Option<String>>>,
-    primary_content: Arc<Mutex<Option<String>>>,
-    set_clipboard_rx: mpsc::UnboundedReceiver<(String, ClipboardType)>,
+    clipboard_content: Arc<Mutex<Option<ClipboardContent>>>,
+    primary_content: Arc<Mutex<Option<ClipboardContent>>>,
+    set_clipboard_rx: mpsc::UnboundedReceiver<(ClipboardContent, ClipboardType)>,
 }
 
 impl X11State {
@@ -42,7 +42,7 @@ impl X11State {
         conn: x11rb::rust_connection::RustConnection,
         screen_num: usize,
         sync_tx: mpsc::UnboundedSender<SyncEvent>,
-        set_clipboard_rx: mpsc::UnboundedReceiver<(String, ClipboardType)>,
+        set_clipboard_rx: mpsc::UnboundedReceiver<(ClipboardContent, ClipboardType)>,
     ) -> Result<Self, String> {
         let screen = &conn.setup().roots[screen_num];
         let window = conn
@@ -153,13 +153,12 @@ impl X11State {
 
     pub fn set_clipboard_content(
         &self,
-        content: String,
+        content: ClipboardContent,
         clipboard_type: ClipboardType,
     ) -> Result<(), String> {
         info!(
-            "[X11] Setting clipboard content: type={:?}, len={}",
-            clipboard_type,
-            content.len()
+            "[X11] Setting clipboard content: type={:?}, content={:?}",
+            clipboard_type, content
         );
 
         let selection_atom = match clipboard_type {
@@ -167,38 +166,93 @@ impl X11State {
             ClipboardType::Primary => AtomEnum::PRIMARY.into(),
         };
 
-        // Store content
         let utf8_string = self.get_atom(UTF8_STRING_ATOM).unwrap();
-        let content_bytes = content.as_bytes();
 
-        // Set property on our window
-        self.conn
-            .change_property8(
-                x11rb::protocol::xproto::PropMode::REPLACE,
-                self.window,
-                utf8_string,
-                utf8_string,
-                content_bytes,
-            )
-            .map_err(|e| format!("Failed to change property: {}", e))?;
-        self.conn
-            .flush()
-            .map_err(|e| format!("Failed to flush connection: {}", e))?;
+        match content {
+            ClipboardContent::Text(text) => {
+                let content_bytes = text.as_bytes();
+                self.conn
+                    .change_property8(
+                        x11rb::protocol::xproto::PropMode::REPLACE,
+                        self.window,
+                        utf8_string,
+                        utf8_string,
+                        content_bytes,
+                    )
+                    .map_err(|e| format!("Failed to change property: {}", e))?;
+                self.conn
+                    .flush()
+                    .map_err(|e| format!("Failed to flush connection: {}", e))?;
 
-        // Claim selection ownership
-        self.conn
-            .set_selection_owner(self.window, selection_atom, CURRENT_TIME)
-            .map_err(|e| format!("Failed to set selection owner: {}", e))?;
-        self.conn
-            .flush()
-            .map_err(|e| format!("Failed to flush connection: {}", e))?;
+                self.conn
+                    .set_selection_owner(self.window, selection_atom, CURRENT_TIME)
+                    .map_err(|e| format!("Failed to set selection owner: {}", e))?;
+                self.conn
+                    .flush()
+                    .map_err(|e| format!("Failed to flush connection: {}", e))?;
 
-        match clipboard_type {
-            ClipboardType::Clipboard => {
-                *self.clipboard_content.blocking_lock() = Some(content.clone());
+                match clipboard_type {
+                    ClipboardType::Clipboard => {
+                        *self.clipboard_content.blocking_lock() =
+                            Some(ClipboardContent::Text(text));
+                    }
+                    ClipboardType::Primary => {
+                        *self.primary_content.blocking_lock() = Some(ClipboardContent::Text(text));
+                    }
+                }
             }
-            ClipboardType::Primary => {
-                *self.primary_content.blocking_lock() = Some(content.clone());
+            ClipboardContent::Binary(mime_map) => {
+                let stored_map = mime_map.clone();
+                for (mime, data) in mime_map {
+                    let target_atom = self.get_atom(&mime).unwrap_or(utf8_string);
+                    self.conn
+                        .change_property8(
+                            x11rb::protocol::xproto::PropMode::REPLACE,
+                            self.window,
+                            target_atom,
+                            target_atom,
+                            &data,
+                        )
+                        .map_err(|e| format!("Failed to change property for {}: {}", mime, e))?;
+                }
+                self.conn
+                    .flush()
+                    .map_err(|e| format!("Failed to flush connection: {}", e))?;
+
+                self.conn
+                    .set_selection_owner(self.window, selection_atom, CURRENT_TIME)
+                    .map_err(|e| format!("Failed to set selection owner: {}", e))?;
+                self.conn
+                    .flush()
+                    .map_err(|e| format!("Failed to flush connection: {}", e))?;
+
+                match clipboard_type {
+                    ClipboardType::Clipboard => {
+                        *self.clipboard_content.blocking_lock() =
+                            Some(ClipboardContent::Binary(stored_map));
+                    }
+                    ClipboardType::Primary => {
+                        *self.primary_content.blocking_lock() =
+                            Some(ClipboardContent::Binary(stored_map));
+                    }
+                }
+            }
+            ClipboardContent::Empty => {
+                self.conn
+                    .set_selection_owner(Window::default(), selection_atom, CURRENT_TIME)
+                    .map_err(|e| format!("Failed to clear selection owner: {}", e))?;
+                self.conn
+                    .flush()
+                    .map_err(|e| format!("Failed to flush connection: {}", e))?;
+
+                match clipboard_type {
+                    ClipboardType::Clipboard => {
+                        *self.clipboard_content.blocking_lock() = None;
+                    }
+                    ClipboardType::Primary => {
+                        *self.primary_content.blocking_lock() = None;
+                    }
+                }
             }
         }
 
@@ -336,10 +390,12 @@ impl X11State {
 
                             match clipboard_type {
                                 ClipboardType::Clipboard => {
-                                    *self.clipboard_content.blocking_lock() = Some(content.clone());
+                                    *self.clipboard_content.blocking_lock() =
+                                        Some(ClipboardContent::Text(content.clone()));
                                 }
                                 ClipboardType::Primary => {
-                                    *self.primary_content.blocking_lock() = Some(content.clone());
+                                    *self.primary_content.blocking_lock() =
+                                        Some(ClipboardContent::Text(content.clone()));
                                 }
                             }
 
@@ -410,12 +466,33 @@ impl X11State {
         // Handle TARGETS request
         if target == targets {
             debug!("[X11] Handling TARGETS request");
-            let target_atoms = vec![
+            let content = match event.selection {
+                s if s == self.get_atom(CLIPBOARD_ATOM).unwrap() => {
+                    self.clipboard_content.blocking_lock().clone()
+                }
+                s if s == AtomEnum::PRIMARY.into() => self.primary_content.blocking_lock().clone(),
+                _ => None,
+            };
+
+            let mut target_atoms = vec![
                 utf8_string,
                 self.get_atom(STRING_ATOM).unwrap(),
                 self.get_atom(TEXT_ATOM).unwrap(),
                 targets,
             ];
+
+            if let Some(ClipboardContent::Binary(mime_map)) = content {
+                for mime in mime_map.keys() {
+                    if let Some(atom) = self.get_atom(mime) {
+                        target_atoms.push(atom);
+                    } else {
+                        if let Ok(atom) = self.conn.intern_atom(false, mime.as_bytes()) {
+                            target_atoms.push(atom.reply().unwrap().atom);
+                        }
+                    }
+                }
+            }
+
             self.conn
                 .change_property32(
                     x11rb::protocol::xproto::PropMode::REPLACE,
@@ -429,7 +506,6 @@ impl X11State {
         // Handle MULTIPLE request
         else if target == multiple {
             debug!("[X11] Handling MULTIPLE request");
-            // Read the property and handle each atom pair
             let prop = self
                 .conn
                 .get_property(false, event.requestor, property, AtomEnum::ATOM, 0, 1024)
@@ -440,8 +516,6 @@ impl X11State {
             let atoms = prop.value32().into_iter().flatten().collect::<Vec<_>>();
             for chunk in atoms.chunks(2) {
                 if chunk.len() == 2 {
-                    // Handle each pair (target, property)
-                    // For simplicity, we just set the property to empty
                     self.conn
                         .change_property8(
                             x11rb::protocol::xproto::PropMode::REPLACE,
@@ -468,7 +542,7 @@ impl X11State {
                 _ => None,
             };
 
-            if let Some(text) = content {
+            if let Some(ClipboardContent::Text(text)) = content {
                 debug!("[X11] Sending text content: {} chars", text.len());
                 self.conn
                     .change_property8(
@@ -479,6 +553,27 @@ impl X11State {
                         text.as_bytes(),
                     )
                     .map_err(|e| format!("Failed to change property8: {}", e))?;
+            } else if let Some(ClipboardContent::Binary(mime_map)) = content {
+                for (mime, data) in mime_map {
+                    if mime.starts_with("text/") {
+                        debug!(
+                            "[X11] Sending binary text: {} bytes for {}",
+                            data.len(),
+                            mime
+                        );
+                        let target_atom = self.get_atom(&mime).unwrap_or(utf8_string);
+                        self.conn
+                            .change_property8(
+                                x11rb::protocol::xproto::PropMode::REPLACE,
+                                event.requestor,
+                                property,
+                                target_atom,
+                                &data,
+                            )
+                            .map_err(|e| format!("Failed to change property8: {}", e))?;
+                        break;
+                    }
+                }
             } else {
                 warn!("[X11] No content available for request");
                 property = AtomEnum::NONE.into();
@@ -516,7 +611,6 @@ impl X11State {
         debug!("[X11] Selection notify: {:?}", event);
 
         if event.property == AtomEnum::NONE.into() {
-            // Selection request failed
             warn!("[X11] Selection request failed (property is NONE)");
             return Ok(());
         }
@@ -525,7 +619,6 @@ impl X11State {
         let string_atom = self.get_atom(STRING_ATOM).unwrap();
         let text_plain = self.get_atom(TEXT_PLAIN_ATOM).unwrap();
 
-        // Read the property - try different types
         let prop = self
             .conn
             .get_property::<u32, u32>(
@@ -547,10 +640,8 @@ impl X11State {
             prop.value.len()
         );
 
-        // Check if property is empty or invalid
         if prop.type_ == 0 || prop.value.is_empty() {
             warn!("[X11] Property is empty or invalid");
-            // Delete the property and return
             self.conn
                 .delete_property(self.window, event.property)
                 .map_err(|e| format!("Failed to delete property: {}", e))?;
@@ -560,39 +651,50 @@ impl X11State {
             return Ok(());
         }
 
-        // Try to decode based on property type
-        let content = if prop.type_ == utf8_string || prop.type_ == text_plain {
-            String::from_utf8(prop.value.clone())
-                .map_err(|e| format!("Failed to convert to UTF-8: {}", e))?
-        } else if prop.type_ == string_atom {
-            // STRING is typically Latin-1
-            prop.value.iter().map(|&b| b as char).collect::<String>()
-        } else {
-            warn!(
-                "[X11] Unsupported property type: {} (expected UTF8_STRING={}, STRING={}, TEXT_PLAIN={})",
-                prop.type_, utf8_string, string_atom, text_plain
-            );
-            // Delete the property and return
-            self.conn
-                .delete_property(self.window, event.property)
-                .map_err(|e| format!("Failed to delete property: {}", e))?;
-            self.conn
-                .flush()
-                .map_err(|e| format!("Failed to flush connection: {}", e))?;
-            return Ok(());
-        };
-
         let clipboard_type = if event.selection == self.get_atom(CLIPBOARD_ATOM).unwrap() {
             ClipboardType::Clipboard
         } else {
             ClipboardType::Primary
         };
 
-        info!(
-            "[X11] Received clipboard content: type={:?}, len={}",
-            clipboard_type,
-            content.len()
-        );
+        let content = if prop.type_ == utf8_string || prop.type_ == text_plain {
+            if let Ok(text) = String::from_utf8(prop.value.clone()) {
+                if !text.is_empty() {
+                    info!("[X11] Received text: {} chars", text.len());
+                    ClipboardContent::Text(text)
+                } else {
+                    ClipboardContent::new_binary()
+                }
+            } else {
+                let mut binary = ClipboardContent::new_binary();
+                binary.add_mime("text/plain".to_string(), prop.value.to_vec());
+                binary
+            }
+        } else if prop.type_ == string_atom {
+            let text: String = prop.value.iter().map(|&b| b as char).collect();
+            if !text.is_empty() {
+                info!("[X11] Received string: {} chars", text.len());
+                ClipboardContent::Text(text)
+            } else {
+                ClipboardContent::new_binary()
+            }
+        } else {
+            let mut binary = ClipboardContent::new_binary();
+            let mut mime_type = "application/octet-stream".to_string();
+            for (name, atom) in self.atoms.iter() {
+                if *atom == prop.type_ {
+                    mime_type = name.clone();
+                    break;
+                }
+            }
+            info!(
+                "[X11] Received binary: {} bytes, type: {}",
+                prop.value.len(),
+                mime_type
+            );
+            binary.add_mime(mime_type, prop.value.to_vec());
+            binary
+        };
 
         match clipboard_type {
             ClipboardType::Clipboard => {
@@ -603,13 +705,11 @@ impl X11State {
             }
         }
 
-        // Send sync event
         let _ = self.sync_tx.send(SyncEvent::X11ToWayland {
-            content: ClipboardContent::Text(content),
+            content,
             clipboard_type,
         });
 
-        // Delete the property
         self.conn
             .delete_property(self.window, event.property)
             .map_err(|e| format!("Failed to delete property: {}", e))?;

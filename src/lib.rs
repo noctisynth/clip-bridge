@@ -1,6 +1,8 @@
 pub mod wayland;
 pub mod x11;
 
+use std::collections::HashMap;
+
 // ============================================================================
 // Shared State
 // ============================================================================
@@ -8,7 +10,48 @@ pub mod x11;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClipboardContent {
     Text(String),
+    Binary(HashMap<String, Vec<u8>>),
     Empty,
+}
+
+impl ClipboardContent {
+    pub fn new_binary() -> Self {
+        ClipboardContent::Binary(HashMap::new())
+    }
+
+    pub fn add_mime(&mut self, mime_type: String, data: Vec<u8>) {
+        if let ClipboardContent::Binary(map) = self {
+            map.insert(mime_type, data);
+        }
+    }
+
+    pub fn get_mime(&self, mime_type: &str) -> Option<&Vec<u8>> {
+        if let ClipboardContent::Binary(map) = self {
+            map.get(mime_type)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_text(&self) -> Option<&String> {
+        if let ClipboardContent::Text(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    pub fn has_binary(&self) -> bool {
+        matches!(self, ClipboardContent::Binary(_) )
+    }
+
+    pub fn mime_types(&self) -> Vec<String> {
+        if let ClipboardContent::Binary(map) = self {
+            map.keys().cloned().collect()
+        } else {
+            vec![]
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

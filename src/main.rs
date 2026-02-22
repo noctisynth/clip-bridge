@@ -29,9 +29,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create channels for setting clipboard
     let (set_x11_clipboard_tx, set_x11_clipboard_rx) =
-        mpsc::unbounded_channel::<(String, ClipboardType)>();
+        mpsc::unbounded_channel::<(ClipboardContent, ClipboardType)>();
     let (set_wayland_clipboard_tx, set_wayland_clipboard_rx) =
-        mpsc::unbounded_channel::<(String, ClipboardType)>();
+        mpsc::unbounded_channel::<(ClipboardContent, ClipboardType)>();
 
     // Clone for X11 thread
     let x11_sync_tx = x11_to_wayland_tx.clone();
@@ -101,10 +101,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle sync events in main task
     tokio::spawn(async move {
-        let mut x11_content: Option<String> = None;
-        let mut primary_content: Option<String> = None;
+        let mut x11_clipboard: Option<ClipboardContent> = None;
+        let mut x11_primary: Option<ClipboardContent> = None;
 
         info!("[Sync] Starting sync loop");
+
+        fn contents_equal(a: &Option<ClipboardContent>, b: &ClipboardContent) -> bool {
+            match (a, b) {
+                (Some(ClipboardContent::Text(t1)), ClipboardContent::Text(t2)) => t1 == t2,
+                (Some(ClipboardContent::Binary(m1)), ClipboardContent::Binary(m2)) => {
+                    m1 == m2
+                }
+                _ => false,
+            }
+        }
 
         loop {
             tokio::select! {
@@ -112,51 +122,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     debug!("[Sync] Received event from X11: {:?}", event);
                     match event {
                         SyncEvent::X11ToWayland { content, clipboard_type } => {
-                            debug!("[Sync] Matching content: {:?}", content);
-                            match content {
-                                ClipboardContent::Text(text) => {
-                                    debug!("[Sync] X11 text content: {:?}", text);
-                                    debug!("[Sync] Current x11_content: {:?}", x11_content);
-                                    match clipboard_type {
-                                        ClipboardType::Clipboard => {
-                                            if x11_content.as_ref() != Some(&text) {
-                                                info!("[Sync] X11 -> Wayland clipboard: {} chars", text.len());
-                                                x11_content = Some(text.clone());
-                                                debug!("[Sync] Sending to Wayland clipboard channel");
-                                                match set_wayland_clipboard_tx.send((text, ClipboardType::Clipboard)) {
-                                                    Ok(_) => debug!("[Sync] Sent to Wayland clipboard channel successfully"),
-                                                    Err(e) => error!("[Sync] Failed to send to Wayland clipboard channel: {}", e),
-                                                }
-                                            } else {
-                                                debug!("[Sync] X11 clipboard content unchanged, skipping");
-                                            }
-                                        }
-                                        ClipboardType::Primary => {
-                                            if primary_content.as_ref() != Some(&text) {
-                                                info!("[Sync] X11 -> Wayland primary: {} chars", text.len());
-                                                primary_content = Some(text.clone());
-                                                debug!("[Sync] Sending to Wayland primary channel");
-                                                match set_wayland_clipboard_tx.send((text, ClipboardType::Primary)) {
-                                                    Ok(_) => debug!("[Sync] Sent to Wayland primary channel successfully"),
-                                                    Err(e) => error!("[Sync] Failed to send to Wayland primary channel: {}", e),
-                                                }
-                                            } else {
-                                                debug!("[Sync] X11 primary content unchanged, skipping");
-                                            }
-                                        }
+                            debug!("[Sync] X11 content: {:?}", content);
+                            let current = match clipboard_type {
+                                ClipboardType::Clipboard => &x11_clipboard,
+                                ClipboardType::Primary => &x11_primary,
+                            };
+                            if !contents_equal(&current, &content) {
+                                match clipboard_type {
+                                    ClipboardType::Clipboard => {
+                                        info!("[Sync] X11 -> Wayland clipboard: {:?}", content);
+                                        x11_clipboard = Some(content.clone());
+                                    }
+                                    ClipboardType::Primary => {
+                                        info!("[Sync] X11 -> Wayland primary: {:?}", content);
+                                        x11_primary = Some(content.clone());
                                     }
                                 }
-                                ClipboardContent::Empty => {
-                                    debug!("[Sync] X11 empty content");
-                                    match clipboard_type {
-                                        ClipboardType::Clipboard => {
-                                            x11_content = None;
-                                        }
-                                        ClipboardType::Primary => {
-                                            primary_content = None;
-                                        }
-                                    }
+                                debug!("[Sync] Sending to Wayland channel");
+                                match set_wayland_clipboard_tx.send((content, clipboard_type)) {
+                                    Ok(_) => debug!("[Sync] Sent to Wayland channel successfully"),
+                                    Err(e) => error!("[Sync] Failed to send to Wayland channel: {}", e),
                                 }
+                            } else {
+                                debug!("[Sync] X11 content unchanged, skipping");
                             }
                         }
                         _ => {
@@ -168,50 +156,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     debug!("[Sync] Received event from Wayland: {:?}", event);
                     match event {
                         SyncEvent::WaylandToX11 { content, clipboard_type } => {
-                            debug!("[Sync] Matching Wayland content: {:?}", content);
-                            match content {
-                                ClipboardContent::Text(text) => {
-                                    debug!("[Sync] Wayland text content: {:?}", text);
-                                    match clipboard_type {
-                                        ClipboardType::Clipboard => {
-                                            if x11_content.as_ref() != Some(&text) {
-                                                info!("[Sync] Wayland -> X11 clipboard: {} chars", text.len());
-                                                x11_content = Some(text.clone());
-                                                debug!("[Sync] Sending to X11 clipboard channel");
-                                                match set_x11_clipboard_tx.send((text, ClipboardType::Clipboard)) {
-                                                    Ok(_) => debug!("[Sync] Sent to X11 clipboard channel successfully"),
-                                                    Err(e) => error!("[Sync] Failed to send to X11 clipboard channel: {}", e),
-                                                }
-                                            } else {
-                                                debug!("[Sync] Wayland clipboard content unchanged, skipping");
-                                            }
-                                        }
-                                        ClipboardType::Primary => {
-                                            if primary_content.as_ref() != Some(&text) {
-                                                info!("[Sync] Wayland -> X11 primary: {} chars", text.len());
-                                                primary_content = Some(text.clone());
-                                                debug!("[Sync] Sending to X11 primary channel");
-                                                match set_x11_clipboard_tx.send((text, ClipboardType::Primary)) {
-                                                    Ok(_) => debug!("[Sync] Sent to X11 primary channel successfully"),
-                                                    Err(e) => error!("[Sync] Failed to send to X11 primary channel: {}", e),
-                                                }
-                                            } else {
-                                                debug!("[Sync] Wayland primary content unchanged, skipping");
-                                            }
-                                        }
+                            debug!("[Sync] Wayland content: {:?}", content);
+                            let current = match clipboard_type {
+                                ClipboardType::Clipboard => &x11_clipboard,
+                                ClipboardType::Primary => &x11_primary,
+                            };
+                            if !contents_equal(&current, &content) {
+                                match clipboard_type {
+                                    ClipboardType::Clipboard => {
+                                        info!("[Sync] Wayland -> X11 clipboard: {:?}", content);
+                                        x11_clipboard = Some(content.clone());
+                                    }
+                                    ClipboardType::Primary => {
+                                        info!("[Sync] Wayland -> X11 primary: {:?}", content);
+                                        x11_primary = Some(content.clone());
                                     }
                                 }
-                                ClipboardContent::Empty => {
-                                    debug!("[Sync] Wayland empty content");
-                                    match clipboard_type {
-                                        ClipboardType::Clipboard => {
-                                            x11_content = None;
-                                        }
-                                        ClipboardType::Primary => {
-                                            primary_content = None;
-                                        }
-                                    }
+                                debug!("[Sync] Sending to X11 channel");
+                                match set_x11_clipboard_tx.send((content, clipboard_type)) {
+                                    Ok(_) => debug!("[Sync] Sent to X11 channel successfully"),
+                                    Err(e) => error!("[Sync] Failed to send to X11 channel: {}", e),
                                 }
+                            } else {
+                                debug!("[Sync] Wayland content unchanged, skipping");
                             }
                         }
                         _ => {

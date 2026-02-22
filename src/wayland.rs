@@ -1,12 +1,11 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::AsFd;
 use std::sync::Arc;
-use std::time::Duration;
 
 use nix::unistd;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tokio::time;
 use tracing::{debug, error, info, warn};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, event_created_child,
@@ -41,20 +40,19 @@ pub struct WaylandState {
     primary_selection_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
     compositor: Option<wl_compositor::WlCompositor>,
     seat: Option<wl_seat::WlSeat>,
-    clipboard_content: Arc<Mutex<Option<String>>>,
-    primary_content: Arc<Mutex<Option<String>>>,
+    clipboard_content: Arc<Mutex<Option<ClipboardContent>>>,
+    primary_content: Arc<Mutex<Option<ClipboardContent>>>,
     clipboard_source: Option<ZwlrDataControlSourceV1>,
     primary_source: Option<ZwlrDataControlSourceV1>,
-    _set_clipboard_tx: mpsc::UnboundedSender<(String, ClipboardType)>,
-    // Store content to be written when requested
-    pending_primary_content: Arc<Mutex<Option<String>>>,
+    _set_clipboard_tx: mpsc::UnboundedSender<(ClipboardContent, ClipboardType)>,
+    pending_primary_content: Arc<Mutex<Option<ClipboardContent>>>,
 }
 
 impl WaylandState {
     pub fn new(
         qh: QueueHandle<Self>,
         sync_tx: mpsc::UnboundedSender<SyncEvent>,
-        set_clipboard_tx: mpsc::UnboundedSender<(String, ClipboardType)>,
+        set_clipboard_tx: mpsc::UnboundedSender<(ClipboardContent, ClipboardType)>,
     ) -> Self {
         Self {
             _qh: qh,
@@ -73,11 +71,11 @@ impl WaylandState {
         }
     }
 
-    pub fn set_clipboard_content(&mut self, content: String, clipboard_type: ClipboardType) {
+    pub fn set_clipboard_content(&mut self, content: ClipboardContent, clipboard_type: ClipboardType) {
         info!(
-            "[Wayland] Setting clipboard content: type={:?}, len={}",
+            "[Wayland] Setting clipboard content: type={:?}, content={:?}",
             clipboard_type,
-            content.len()
+            content
         );
 
         let device = if let Some(d) = &self.data_control_device {
@@ -89,26 +87,32 @@ impl WaylandState {
 
         match clipboard_type {
             ClipboardType::Clipboard => {
-                // Store content first, before creating source
-                // *self.pending_clipboard_content.blocking_lock() = Some(content.clone());
                 *self.clipboard_content.blocking_lock() = Some(content.clone());
 
-                // Create new source BEFORE destroying old one to avoid gap
                 if let Some(manager) = &self.data_control_manager {
                     let source = manager.create_data_source(&self._qh, ());
-                    source.offer("text/plain;charset=utf-8".into());
-                    source.offer("text/plain".into());
-                    source.offer("UTF8_STRING".into());
-                    source.offer("TEXT".into());
-                    source.offer("STRING".into());
+
+                    match &content {
+                        ClipboardContent::Text(_) => {
+                            source.offer("text/plain;charset=utf-8".into());
+                            source.offer("text/plain".into());
+                            source.offer("UTF8_STRING".into());
+                            source.offer("TEXT".into());
+                            source.offer("STRING".into());
+                        }
+                        ClipboardContent::Binary(mimes) => {
+                            for mime in mimes.keys() {
+                                source.offer(mime.clone().into());
+                            }
+                        }
+                        ClipboardContent::Empty => {}
+                    }
 
                     debug!("[Wayland] Created clipboard source: {:?}", source);
 
-                    // Set selection FIRST - this makes the new source active
                     device.set_selection(Some(&source));
                     debug!("[Wayland] Set clipboard selection");
 
-                    // Now destroy old source after new one is active
                     if let Some(old_source) = self.clipboard_source.take() {
                         debug!("[Wayland] Destroying old clipboard source");
                         old_source.destroy();
@@ -116,30 +120,36 @@ impl WaylandState {
 
                     self.clipboard_source = Some(source);
                     info!("[Wayland] Clipboard content set successfully");
-
-                    // Note: Roundtrip is handled by the event loop
-                    // The Send event will be triggered when an application requests the clipboard content
                 } else {
                     warn!("[Wayland] No data control manager available");
                 }
             }
             ClipboardType::Primary => {
-                // Store content first, before creating source
                 *self.pending_primary_content.blocking_lock() = Some(content.clone());
                 *self.primary_content.blocking_lock() = Some(content.clone());
 
                 // Create new source BEFORE destroying old one to avoid gap
                 if let Some(manager) = &self.data_control_manager {
                     let source = manager.create_data_source(&self._qh, ());
-                    source.offer("text/plain;charset=utf-8".into());
-                    source.offer("text/plain".into());
-                    source.offer("UTF8_STRING".into());
-                    source.offer("TEXT".into());
-                    source.offer("STRING".into());
+
+                    match &content {
+                        ClipboardContent::Text(_) => {
+                            source.offer("text/plain;charset=utf-8".into());
+                            source.offer("text/plain".into());
+                            source.offer("UTF8_STRING".into());
+                            source.offer("TEXT".into());
+                            source.offer("STRING".into());
+                        }
+                        ClipboardContent::Binary(mimes) => {
+                            for mime in mimes.keys() {
+                                source.offer(mime.clone().into());
+                            }
+                        }
+                        ClipboardContent::Empty => {}
+                    }
 
                     debug!("[Wayland] Created primary source: {:?}", source);
 
-                    // Set selection FIRST - this makes the new source active
                     device.set_primary_selection(Some(&source));
                     debug!("[Wayland] Set primary selection");
 
@@ -151,9 +161,6 @@ impl WaylandState {
 
                     self.primary_source = Some(source);
                     info!("[Wayland] Primary selection content set successfully");
-
-                    // Note: Roundtrip is handled by the event loop
-                    // The Send event will be triggered when an application requests the primary selection content
                 }
             }
         }
@@ -295,108 +302,123 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for WaylandState {
             zwlr_data_control_device_v1::Event::Selection { id } => {
                 info!("[Wayland] Selection changed: {:?}", id);
                 if let Some(offer) = id {
-                    // Create pipes for receiving data
-                    match unistd::pipe() {
-                        Ok((read_fd, write_fd)) => {
-                            debug!("[Wayland] Created pipe for reading clipboard data");
-                            // Request text content with pipe
-                            offer.receive("text/plain;charset=utf-8".into(), write_fd.as_fd());
-                            // Close the write end immediately after receive() - this signals EOF to the reader
-                            // The compositor has already duplicated the fd, so it's safe to close
-                            let _ = unistd::close(write_fd);
-                            debug!("[Wayland] Closed write_fd");
-                            // Read from pipe in a separate task
-                            let read_file = File::from(read_fd);
-                            debug!("[Wayland] Created file from read_fd: {:?}", read_file);
-                            let sync_tx = state.sync_tx.clone();
-                            let content_ref = state.clipboard_content.clone();
-                            tokio::task::spawn(async move {
-                                debug!("[Wayland] Starting async read from pipe");
-                                use tokio::io::AsyncReadExt;
-                                let mut reader = tokio::fs::File::from_std(read_file);
-                                let mut buffer = Vec::new();
-                                let mut chunk = [0u8; 8192];
-                                let timeout_duration = Duration::from_secs(5);
+                    let mime_types = vec![
+                        "text/plain;charset=utf-8".to_string(),
+                        "text/plain".to_string(),
+                        "UTF8_STRING".to_string(),
+                        "image/png".to_string(),
+                        "image/bmp".to_string(),
+                        "image/jpeg".to_string(),
+                    ];
 
-                                loop {
-                                    match time::timeout(timeout_duration, reader.read(&mut chunk))
-                                        .await
-                                    {
-                                        Ok(Ok(0)) => {
-                                            // EOF - no more data
-                                            break;
+                    let sync_tx = state.sync_tx.clone();
+                    let offer = offer.clone();
+
+                    std::thread::spawn(move || {
+                        let mut all_data: HashMap<String, Vec<u8>> = HashMap::new();
+                        let mut has_text = false;
+
+                        for mime in mime_types {
+                            match unistd::pipe() {
+                                Ok((read_fd, write_fd)) => {
+                                    offer.receive(mime.clone(), write_fd.as_fd());
+                                    let _ = unistd::close(write_fd);
+                                    let mut read_file = File::from(read_fd);
+                                    let mut buffer = Vec::new();
+                                    let mut chunk = [0u8; 8192];
+
+                                    loop {
+                                        match std::io::Read::read(&mut read_file, &mut chunk) {
+                                            Ok(0) => break,
+                                            Ok(n) => {
+                                                buffer.extend_from_slice(&chunk[..n]);
+                                            }
+                                            Err(e) => {
+                                                debug!("[Wayland] Failed to read {}: {}", mime, e);
+                                                break;
+                                            }
                                         }
-                                        Ok(Ok(n)) => {
-                                            buffer.extend_from_slice(&chunk[..n]);
+                                    }
+
+                                    if !buffer.is_empty() {
+                                        debug!("[Wayland] Read {} bytes for MIME: {}", buffer.len(), mime);
+                                        if mime.starts_with("text/") || mime == "UTF8_STRING" || mime == "STRING" {
+                                            has_text = true;
                                         }
-                                        Ok(Err(e)) => {
-                                            error!("[Wayland] Failed to read from pipe: {}", e);
+                                        all_data.insert(mime, buffer);
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("[Wayland] Failed to create pipe for {}: {}", mime, e);
+                                }
+                            }
+                        }
+
+                        if !all_data.is_empty() {
+                            let content = if has_text {
+                                if let Some(text_data) = all_data.get("text/plain;charset=utf-8") {
+                                    if let Ok(text) = String::from_utf8(text_data.clone()) {
+                                        if !text.is_empty() {
+                                            info!("[Wayland] Clipboard content: {} chars text + {} binary types", text.len(), all_data.len());
+                                            let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                                                content: ClipboardContent::Text(text.clone()),
+                                                clipboard_type: ClipboardType::Clipboard,
+                                            });
                                             return;
                                         }
-                                        Err(_) => {
-                                            warn!(
-                                                "[Wayland] Pipe read timeout after {:?}",
-                                                timeout_duration
-                                            );
-                                            break;
+                                    }
+                                }
+                                if let Some(text_data) = all_data.get("text/plain") {
+                                    if let Ok(text) = String::from_utf8(text_data.clone()) {
+                                        if !text.is_empty() {
+                                            info!("[Wayland] Clipboard content: {} chars text + {} binary types", text.len(), all_data.len());
+                                            let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                                                content: ClipboardContent::Text(text),
+                                                clipboard_type: ClipboardType::Clipboard,
+                                            });
+                                            return;
                                         }
                                     }
                                 }
+                                ClipboardContent::Binary(all_data)
+                            } else {
+                                info!("[Wayland] Clipboard content: {} binary types", all_data.len());
+                                ClipboardContent::Binary(all_data)
+                            };
 
-                                debug!("[Wayland] Read {} bytes from clipboard pipe", buffer.len());
-                                if let Ok(text) = String::from_utf8(buffer) {
-                                    if text.is_empty() {
-                                        // Wechat sends empty clipboard content to wayland,
-                                        // however it uses x11 clipboard to send the actual content.
-                                        // So we ignore empty clipboard content.
-                                        warn!("[Wayland] Received empty clipboard content");
-                                    } else {
-                                        info!(
-                                            "[Wayland] Clipboard content received: {} chars",
-                                            text.len()
-                                        );
-                                        *content_ref.lock().await = Some(text.clone());
-                                        let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                                            content: ClipboardContent::Text(text),
-                                            clipboard_type: ClipboardType::Clipboard,
-                                        });
-                                    }
-                                } else {
-                                    warn!("[Wayland] Failed to decode clipboard as UTF-8");
-                                }
+                            let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                                content: content.clone(),
+                                clipboard_type: ClipboardType::Clipboard,
                             });
+                        } else {
+                            warn!("[Wayland] No clipboard content received");
                         }
-                        Err(e) => {
-                            error!("[Wayland] Failed to create pipe: {}", e);
-                        }
-                    }
+                    });
                 } else {
-                    // Wechat sends empty clipboard content to wayland,
-                    // clear the selection will trigger recursive call to this function.
-
-                    // // Selection cleared
-                    // info!("[Wayland] Selection cleared");
-                    // let content_ref = state.clipboard_content.clone();
-                    // let sync_tx = state.sync_tx.clone();
-                    // tokio::spawn(async move {
-                    //     *content_ref.lock().await = None;
-                    //     let _ = sync_tx.send(SyncEvent::WaylandToX11 {
-                    //         content: ClipboardContent::Empty,
-                    //         clipboard_type: ClipboardType::Clipboard,
-                    //     });
-                    // });
+                    // Selection cleared
+                    info!("[Wayland] Selection cleared");
+                    let sync_tx = state.sync_tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = sync_tx.send(SyncEvent::WaylandToX11 {
+                            content: ClipboardContent::Empty,
+                            clipboard_type: ClipboardType::Clipboard,
+                        });
+                    });
                 }
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id: _id } => {
+                // Primary selection may very large and frequent, this will cause performance issue.
+                // So we ignore it for now.
+
                 // info!("[Wayland] Primary selection changed: {:?}", id);
                 // if let Some(offer) = id {
                 //     match unistd::pipe() {
                 //         Ok((read_fd, write_fd)) => {
                 //             debug!("[Wayland] Created pipe for reading primary selection data");
-                //             offer.receive("text/plain;charset=utf-8".into(), unsafe {
-                //                 BorrowedFd::borrow_raw(write_fd)
-                //             });
-                //             let read_file = unsafe { File::from_raw_fd(read_fd) };
+                //             offer.receive("text/plain;charset=utf-8".into(), write_fd.as_fd());
+                //             let _ = unistd::close(write_fd);
+                //             debug!("[Wayland] Closed write_fd for primary selection");
+                //             let read_file = File::from(read_fd);
                 //             let sync_tx = state.sync_tx.clone();
                 //             let content_ref = state.primary_content.clone();
                 //             tokio::spawn(async move {
@@ -499,33 +521,46 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for WaylandState {
                         "[Wayland] Unknown source {:?}, cannot determine content. Current clipboard: {:?}, Primary: {:?}",
                         source, state.clipboard_source, state.primary_source
                     );
-                    // OwnedFd will be closed automatically when dropped
                     return;
                 };
 
                 if let Some(data) = content {
-                    debug!("[Wayland] Writing {} bytes to fd", data.len());
-                    // Write the actual content to file descriptor
-                    use nix::unistd::write;
-                    match write(&fd, data.as_bytes()) {
-                        Ok(bytes_written) => {
-                            debug!("[Wayland] Successfully wrote {} bytes", bytes_written);
-                            if bytes_written != data.len() {
-                                warn!(
-                                    "[Wayland] Partial write: {} of {} bytes",
-                                    bytes_written,
-                                    data.len()
-                                );
+                    match data {
+                        ClipboardContent::Text(text) => {
+                            debug!("[Wayland] Writing text: {} chars", text.len());
+                            use nix::unistd::write;
+                            match write(&fd, text.as_bytes()) {
+                                Ok(bytes_written) => {
+                                    debug!("[Wayland] Successfully wrote {} bytes", bytes_written);
+                                }
+                                Err(e) => {
+                                    error!("[Wayland] Failed to write text: {}", e);
+                                }
                             }
                         }
-                        Err(e) => {
-                            error!("[Wayland] Failed to write data: {}", e);
+                        ClipboardContent::Binary(mime_map) => {
+                            let mime_str = mime_type.to_string();
+                            if let Some(binary_data) = mime_map.get(&mime_str) {
+                                debug!("[Wayland] Writing {} bytes for MIME: {}", binary_data.len(), mime_str);
+                                use nix::unistd::write;
+                                match write(&fd, binary_data) {
+                                    Ok(bytes_written) => {
+                                        debug!("[Wayland] Successfully wrote {} bytes", bytes_written);
+                                    }
+                                    Err(e) => {
+                                        error!("[Wayland] Failed to write binary: {}", e);
+                                    }
+                                }
+                            } else {
+                                warn!("[Wayland] No data for MIME type: {}", mime_str);
+                            }
+                        }
+                        ClipboardContent::Empty => {
+                            warn!("[Wayland] Empty content, nothing to send");
                         }
                     }
-                    // OwnedFd will be closed automatically when dropped
                 } else {
                     warn!("[Wayland] No content available to send");
-                    // OwnedFd will be closed automatically when dropped
                 }
             }
             zwlr_data_control_source_v1::Event::Cancelled => {
@@ -567,7 +602,7 @@ impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for WaylandState {
 impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for WaylandState {
     fn event(
         state: &mut Self,
-        source: &ZwpPrimarySelectionSourceV1,
+        _source: &ZwpPrimarySelectionSourceV1,
         event: zwp_primary_selection_source_v1::Event,
         _data: &(),
         _conn: &Connection,
@@ -577,45 +612,53 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for WaylandState {
         match event {
             zwp_primary_selection_source_v1::Event::Send { mime_type, fd } => {
                 info!(
-                    "[Wayland] Primary send data for mime type: {} from source: {:?}",
-                    mime_type, source
+                    "[Wayland] Primary send data for mime type: {}",
+                    mime_type
                 );
 
-                // Get the content for primary selection
                 let content = state.pending_primary_content.blocking_lock().clone();
 
                 if let Some(data) = content {
-                    debug!("[Wayland] Writing {} bytes to primary fd", data.len());
-                    // Write the actual content to file descriptor
-                    use nix::unistd::write;
-                    // Use write directly to avoid File ownership issues
-                    match write(&fd, data.as_bytes()) {
-                        Ok(bytes_written) => {
-                            debug!(
-                                "[Wayland] Successfully wrote {} bytes to primary",
-                                bytes_written
-                            );
-                            if bytes_written != data.len() {
-                                warn!(
-                                    "[Wayland] Partial write to primary: {} of {} bytes",
-                                    bytes_written,
-                                    data.len()
-                                );
+                    match data {
+                        ClipboardContent::Text(text) => {
+                            debug!("[Wayland] Writing primary text: {} chars", text.len());
+                            use nix::unistd::write;
+                            match write(&fd, text.as_bytes()) {
+                                Ok(bytes_written) => {
+                                    debug!("[Wayland] Successfully wrote {} bytes to primary", bytes_written);
+                                }
+                                Err(e) => {
+                                    error!("[Wayland] Failed to write primary text: {}", e);
+                                }
                             }
                         }
-                        Err(e) => {
-                            error!("[Wayland] Failed to write primary data: {}", e);
+                        ClipboardContent::Binary(mime_map) => {
+                            let mime_str = mime_type.to_string();
+                            if let Some(binary_data) = mime_map.get(&mime_str) {
+                                debug!("[Wayland] Writing {} bytes for primary MIME: {}", binary_data.len(), mime_str);
+                                use nix::unistd::write;
+                                match write(&fd, binary_data) {
+                                    Ok(bytes_written) => {
+                                        debug!("[Wayland] Successfully wrote {} bytes to primary", bytes_written);
+                                    }
+                                    Err(e) => {
+                                        error!("[Wayland] Failed to write primary binary: {}", e);
+                                    }
+                                }
+                            } else {
+                                warn!("[Wayland] No data for primary MIME type: {}", mime_str);
+                            }
+                        }
+                        ClipboardContent::Empty => {
+                            warn!("[Wayland] Empty primary content");
                         }
                     }
-                    // OwnedFd will be closed automatically when dropped
                 } else {
                     warn!("[Wayland] No primary content available to send");
-                    // OwnedFd will be closed automatically when dropped
                 }
             }
             zwp_primary_selection_source_v1::Event::Cancelled => {
                 debug!("[Wayland] Primary data source cancelled");
-                source.destroy();
             }
             _ => {}
         }
