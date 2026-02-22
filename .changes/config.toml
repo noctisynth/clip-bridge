@@ -1,0 +1,32 @@
+[branches]
+base = "main"
+release = "release"
+
+[tags]
+chore = "Chores"
+feat = "New Features"
+fix = "Bug Fixes"
+perf = "Performance Improvements"
+refactor = "Refactors"
+
+[packages.clip-bridge]
+path = "."
+resolver = "rust"
+
+[resolver.rust.pre-check]
+url = "https://crates.io/api/v1/crates/{{ package.name }}/{{ package.version }}"
+
+[resolver.rust.pre-check.extra-headers]
+User-Agent = "Semifold 0.2.13"
+
+[[resolver.rust.publish]]
+command = "cargo"
+args = ["publish"]
+
+[[resolver.rust.post-version]]
+command = "cargo"
+args = [
+    "generate-lockfile",
+    "--offline",
+]
+dry_run = true
