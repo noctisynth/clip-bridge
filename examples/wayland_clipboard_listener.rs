@@ -1,4 +1,4 @@
-use clip_brige::{
+use clip_bridge::{
     wayland::{GlobalData, WaylandState},
     ClipboardType,
 };

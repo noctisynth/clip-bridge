@@ -1,4 +1,4 @@
-use clip_brige::{wayland::WaylandState, ClipboardType};
+use clip_bridge::{wayland::WaylandState, ClipboardType};
 use tokio::sync::mpsc;
 use tracing::info;
 use wayland_client::Connection;
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut wayland_state = WaylandState::new(qh.clone(), sync_tx, set_clipboard_tx);
 
-    display.get_registry(&qh, clip_brige::wayland::GlobalData);
+    display.get_registry(&qh, clip_bridge::wayland::GlobalData);
 
     info!("Before first roundtrip");
     event_queue.roundtrip(&mut wayland_state)?;

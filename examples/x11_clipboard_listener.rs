@@ -1,4 +1,4 @@
-use clip_brige::x11::X11State;
+use clip_bridge::x11::X11State;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing_subscriber;
 use x11rb::connect;
