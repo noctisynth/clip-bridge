@@ -115,12 +115,12 @@ if (!process.env.CI) {
 	});
 }
 
-// // Publish to AUR
-// execSync(`git commit -m "release: publish aur"`, {
-// 	stdio: "inherit",
-// 	cwd: "aur",
-// });
-// execSync(`git push origin master`, {
-// 	stdio: "inherit",
-// 	cwd: "aur",
-// });
+// Publish to AUR
+execSync(`git commit -m "release: publish aur"`, {
+	stdio: "inherit",
+	cwd: "aur",
+});
+execSync(`git push origin master`, {
+	stdio: "inherit",
+	cwd: "aur",
+});
