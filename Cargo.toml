@@ -1,6 +1,6 @@
 [package]
 name = "clip-bridge"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 authors = ["苏向夜 <fu050409@163.com>"]
 description = "Sync your X11 and Wayland clipboard seamlessly"
