@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.2
+
+### Chores
+
+- [`4a11d2f`](https://github.com/noctisynth/clip-bridge/commit/4a11d2fc9624928ec8b14cdac5c387eea79d754e): Publish `clip-bridge` to AUR repository.
+
 ## v0.1.1
 
 ### New Features
