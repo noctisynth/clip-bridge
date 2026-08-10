@@ -16,6 +16,7 @@ assets = ["./target/cargo-aur/clip-bridge-*.tar.gz"]
 
 [resolver.rust.pre-check]
 url = "https://crates.io/api/v1/crates/{{ package.name }}/{{ package.version }}"
+type = "http"
 
 [resolver.rust.pre-check.extra-headers]
 User-Agent = "Semifold 0.2.13"
@@ -33,4 +34,4 @@ command = "cargo"
 args = [
   "generate-lockfile",
 ]
-dry_run = true
+dry-run = true
