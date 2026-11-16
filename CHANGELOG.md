@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.0
+
+### Bug Fixes
+
+- [`9be60a0`](https://github.com/noctisynth/clip-bridge/commit/9be60a05d9c8d76466b919d50709390b8d257d3d): Make Wayland pipe descriptors nonblocking so idle and total transfer timeouts remain enforceable, and add saturation, stale completion, slow requester, and timeout regression coverage.
+
+### Refactors
+
+- [`9be60a0`](https://github.com/noctisynth/clip-bridge/commit/9be60a05d9c8d76466b919d50709390b8d257d3d): Move process supervision into the library runtime, add typed failure categories and RUST_LOG filtering, and coordinate signal, actor failure, panic, and bounded shutdown handling.
+- [`9be60a0`](https://github.com/noctisynth/clip-bridge/commit/9be60a05d9c8d76466b919d50709390b8d257d3d): Introduce the pure clipboard coordinator, bounded backend event channels, and latest-wins command mailboxes as the foundation for the X11 and Wayland backend redesign.
+- [`9be60a0`](https://github.com/noctisynth/clip-bridge/commit/9be60a05d9c8d76466b919d50709390b8d257d3d): Remove legacy public backend state and event shims, expose only the asynchronous run entry point, narrow dependency features, and declare the stable Rust toolchain.
+- [`9be60a0`](https://github.com/noctisynth/clip-bridge/commit/9be60a05d9c8d76466b919d50709390b8d257d3d): Replace the legacy Wayland handler with bounded ext-data-control and wlr-data-control actors, complete pipe I/O, capability-gated Primary support, and isolated protocol harnesses.
+- [`9be60a0`](https://github.com/noctisynth/clip-bridge/commit/9be60a05d9c8d76466b919d50709390b8d257d3d): Replace the legacy X11 clipboard handler with an event-driven XFixes actor supporting TARGETS negotiation, direct and INCR transfers, bounded state, and isolated Xvfb wire tests.
+
 ## v0.1.9
 
 ### Bug Fixes
